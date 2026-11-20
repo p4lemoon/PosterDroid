@@ -266,6 +266,9 @@ data class CAEmitterLayer(
     override val sublayers: List<CamlLayer> = emptyList(),
     override val animations: List<CamlAnimation> = emptyList(),
     override val filters: List<CamlFilter> = emptyList(),
+    override val speed: Double = 1.0,
+    override val beginTime: Double = 0.0,
+    override val timeOffset: Double = 0.0,
     val emitterPosition: Point2f = Point2f(),
     val emitterZPosition: Float = 0f,
     val emitterSize: Point2f = Point2f(),
@@ -276,6 +279,7 @@ data class CAEmitterLayer(
     val birthRate: Float = 1f,
     val velocity: Float = 1f,
     val lifetime: Float = 1f,
+    val spinBias: Float = 0f,
     val emitterCells: List<CAEmitterCell> = emptyList(),
     val emitterBehaviors: List<CAEmitterBehavior> = emptyList()
 ) : CamlLayer()

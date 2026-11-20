@@ -6,6 +6,7 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.hardware.Sensor
@@ -42,6 +43,7 @@ class PosterWallpaperService : WallpaperService() {
 
     inner class PosterEngine : Engine() {
         private var currentProgress: Float = 0f
+        private var targetDragProgress: Float = 0f
         private var currentState: String = "LOCKED"
         private var isVisibleState: Boolean = true
         private var hasSurface: Boolean = false
@@ -156,6 +158,15 @@ class PosterWallpaperService : WallpaperService() {
                 currentTiltX = currentTiltX * 0.82f + rawTiltX * 0.18f
                 currentTiltY = currentTiltY * 0.82f + rawTiltY * 0.18f
 
+                if (currentState == "DRAGGING" && isSmoothingEnabled) {
+                    val delta = targetDragProgress - currentProgress
+                    if (abs(delta) > 0.0005f) {
+                        currentProgress += delta * 0.35f
+                    } else {
+                        currentProgress = targetDragProgress
+                    }
+                }
+
                 val nowMs = System.currentTimeMillis()
                 if (nowMs - lastLogTimeMs > 5000L) {
                     lastLogTimeMs = nowMs
@@ -181,7 +192,8 @@ class PosterWallpaperService : WallpaperService() {
                     currentState == "UNLOCKING" ||
                     currentState == "CANCELLED" ||
                     currentAnimTarget != null ||
-                    unlockAnimator?.isRunning == true)
+                    unlockAnimator?.isRunning == true ||
+                    (currentState == "DRAGGING" && abs(targetDragProgress - currentProgress) > 0.0005f))
             val isTilting = abs(rawTiltX - currentTiltX) > 0.002f || abs(rawTiltY - currentTiltY) > 0.002f
 
             if (hasContinuous || isInteracting || isTilting) {
@@ -263,7 +275,40 @@ class PosterWallpaperService : WallpaperService() {
                 Log.w(PosterConstants.TAG_WALLPAPER, "Could not register debug receiver: ${t.message}")
             }
 
+            try {
+                val screenFilter = android.content.IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                }
+                registerReceiver(screenReceiver, screenFilter)
+                isScreenReceiverRegistered = true
+            } catch (t: Throwable) {
+                Log.w(PosterConstants.TAG_WALLPAPER, "Could not register screen receiver: ${t.message}")
+            }
+
             loadActiveTendies()
+        }
+
+        private var isScreenReceiverRegistered = false
+        private val screenReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        Log.d(PosterConstants.TAG_WALLPAPER, "ACTION_SCREEN_OFF received: resetting progress to LOCKED")
+                        unlockAnimator?.cancel()
+                        currentAnimTarget = null
+                        currentProgress = 0f
+                        currentState = "LOCKED"
+                        targetDragProgress = 0f
+                        updateAnimationLoopState()
+                        drawFrame(currentElapsedSeconds, force = true)
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        Log.d(PosterConstants.TAG_WALLPAPER, "ACTION_USER_PRESENT received: device unlocked")
+                        handleProgressEvent(1.0f, "UNLOCKED")
+                    }
+                }
+            }
         }
 
         private var isDebugReceiverRegistered = false
@@ -402,16 +447,42 @@ class PosterWallpaperService : WallpaperService() {
             extras: Bundle?,
             resultRequested: Boolean
         ): Bundle? {
-            if (action == PosterConstants.COMMAND_PROGRESS) {
-                val newProgress = extras?.getFloat(PosterConstants.EXTRA_PROGRESS, 0f) ?: 0f
-                val newState = extras?.getString(PosterConstants.EXTRA_STATE, "UNKNOWN") ?: "UNKNOWN"
-                Log.d(PosterConstants.TAG_WALLPAPER, "onCommand: progress=$newProgress, state=$newState")
-                handleProgressEvent(newProgress, newState)
+            when (action) {
+                PosterConstants.COMMAND_PROGRESS -> {
+                    val newProgress = extras?.getFloat(PosterConstants.EXTRA_PROGRESS, 0f) ?: 0f
+                    val newState = extras?.getString(PosterConstants.EXTRA_STATE, "UNKNOWN") ?: "UNKNOWN"
+                    Log.d(PosterConstants.TAG_WALLPAPER, "onCommand: progress=$newProgress, state=$newState")
+                    handleProgressEvent(newProgress, newState)
+                }
+                "android.wallpaper.going_to_sleep" -> {
+                    Log.d(PosterConstants.TAG_WALLPAPER, "onCommand: going_to_sleep")
+                    unlockAnimator?.cancel()
+                    currentAnimTarget = null
+                    currentProgress = 0f
+                    currentState = "LOCKED"
+                    targetDragProgress = 0f
+                    updateAnimationLoopState()
+                    drawFrame(currentElapsedSeconds, force = true)
+                }
             }
             return super.onCommand(action, x, y, z, extras, resultRequested)
         }
 
         private fun handleProgressEvent(targetProgress: Float, state: String) {
+            val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val isInteractive = pm?.isInteractive ?: true
+            if (!isInteractive && (state == "UNLOCKING" || state == "UNLOCKED" || targetProgress > 0.05f)) {
+                Log.d(PosterConstants.TAG_WALLPAPER, "handleProgressEvent: rejected non-interactive/AOD unlock attempt (state=$state, targetProgress=$targetProgress)")
+                unlockAnimator?.cancel()
+                currentAnimTarget = null
+                currentProgress = 0f
+                currentState = "LOCKED"
+                targetDragProgress = 0f
+                updateAnimationLoopState()
+                drawFrame(currentElapsedSeconds, force = true)
+                return
+            }
+
             if (!isEffectEnabled) {
                 // всегда будет выполняться, потому что захардкожено лол
                 currentProgress = 0f
@@ -430,7 +501,7 @@ class PosterWallpaperService : WallpaperService() {
                         return
                     }
                     if (currentProgress < 0.999f) {
-                        startTransitionAnimation(currentProgress, 1.0f, 350L)
+                        startTransitionAnimation(currentProgress, 1.0f, 650L)
                     } else {
                         unlockAnimator?.cancel()
                         currentAnimTarget = null
@@ -445,7 +516,7 @@ class PosterWallpaperService : WallpaperService() {
                         return
                     }
                     if (currentProgress < 0.999f) {
-                        startTransitionAnimation(currentProgress, 1.0f, 350L)
+                        startTransitionAnimation(currentProgress, 1.0f, 650L)
                     } else {
                         unlockAnimator?.cancel()
                         currentAnimTarget = null
@@ -463,7 +534,7 @@ class PosterWallpaperService : WallpaperService() {
                         return
                     }
                     if (currentProgress > 0.001f) {
-                        startTransitionAnimation(currentProgress, 0.0f, 300L)
+                        startTransitionAnimation(currentProgress, 0.0f, 550L)
                     } else {
                         unlockAnimator?.cancel()
                         currentAnimTarget = null
@@ -479,7 +550,10 @@ class PosterWallpaperService : WallpaperService() {
                     currentState = "DRAGGING"
                     currentAnimTarget = null
                     unlockAnimator?.cancel()
-                    currentProgress = effectiveProgress
+                    targetDragProgress = effectiveProgress
+                    if (!isSmoothingEnabled) {
+                        currentProgress = effectiveProgress
+                    }
                     updateAnimationLoopState()
                     drawFrame(currentElapsedSeconds, force = false)
                 }
@@ -489,7 +563,7 @@ class PosterWallpaperService : WallpaperService() {
                         return
                     }
                     if (currentProgress > 0.001f) {
-                        startTransitionAnimation(currentProgress, 0.0f, 350L)
+                        startTransitionAnimation(currentProgress, 0.0f, 500L)
                     } else {
                         unlockAnimator?.cancel()
                         currentAnimTarget = null
@@ -500,7 +574,10 @@ class PosterWallpaperService : WallpaperService() {
                 }
                 else -> {
                     if (currentState != "UNLOCKING" && currentState != "UNLOCKED") {
-                        currentProgress = effectiveProgress
+                        targetDragProgress = effectiveProgress
+                        if (!isSmoothingEnabled) {
+                            currentProgress = effectiveProgress
+                        }
                         drawFrame(currentElapsedSeconds, force = false)
                     }
                 }
@@ -534,13 +611,13 @@ class PosterWallpaperService : WallpaperService() {
             } else {
                 com.posterdroid.caml.math.CASpringTiming(
                     mass = 1.0f,
-                    stiffness = 150.0f,
-                    damping = 18.0f,
+                    stiffness = 100.0f,
+                    damping = 16.5f,
                     initialVelocity = 0.0f
                 )
             }
 
-            val settleMs = (spring.settlingDuration * 1000).toLong().coerceIn(280L, 550L)
+            val settleMs = (spring.settlingDuration * 1000).toLong().coerceIn(450L, 850L)
             val interp = android.animation.TimeInterpolator { f -> spring.solveNormalized(f) }
 
             var isCancelled = false
@@ -620,7 +697,17 @@ class PosterWallpaperService : WallpaperService() {
             val rend = renderer
             if (rend != null) {
                 canvas.drawColor(Color.BLACK)
-                rend.render(canvas, currentProgress, timeSeconds, tiltX = currentTiltX, tiltY = currentTiltY)
+                val isNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                val orientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "Landscape" else "PortraitUp"
+                rend.render(
+                    canvas = canvas,
+                    progress = currentProgress,
+                    timeSeconds = timeSeconds,
+                    tiltX = currentTiltX,
+                    tiltY = currentTiltY,
+                    isDarkMode = isNight,
+                    orientation = orientation
+                )
             } else {
                 canvas.drawColor(Color.parseColor("#121212"))
             }
@@ -641,6 +728,12 @@ class PosterWallpaperService : WallpaperService() {
                     unregisterReceiver(debugReceiver)
                 } catch (t: Throwable) {}
                 isDebugReceiverRegistered = false
+            }
+            if (isScreenReceiverRegistered) {
+                try {
+                    unregisterReceiver(screenReceiver)
+                } catch (t: Throwable) {}
+                isScreenReceiverRegistered = false
             }
             Log.d(PosterConstants.TAG_WALLPAPER, "PosterEngine destroyed")
         }

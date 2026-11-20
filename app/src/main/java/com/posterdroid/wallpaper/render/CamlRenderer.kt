@@ -115,7 +115,9 @@ class CamlRenderer(private val pkg: CamlPackage) {
         progress: Float,
         timeSeconds: Float = 0f,
         tiltX: Float = 0f,
-        tiltY: Float = 0f
+        tiltY: Float = 0f,
+        isDarkMode: Boolean = false,
+        orientation: String = "PortraitUp"
     ) {
         val root = pkg.background?.rootLayer
             ?: pkg.floating?.rootLayer
@@ -145,17 +147,17 @@ class CamlRenderer(private val pkg: CamlPackage) {
 
         // 1. Render Background Tree
         pkg.background?.let { tree ->
-            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 5f)
+            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 5f, isDarkMode = isDarkMode, orientation = orientation)
         }
 
         // 2. Render Floating Tree (clock / mid-ground)
         pkg.floating?.let { tree ->
-            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 25f)
+            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 25f, isDarkMode = isDarkMode, orientation = orientation)
         }
 
         // 3. Render Foreground Tree
         pkg.foreground?.let { tree ->
-            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 40f)
+            renderTree(canvas, tree, effectiveProgress, timeSeconds, tiltX, tiltY, rootH, dt, fallbackParallaxScale = 40f, isDarkMode = isDarkMode, orientation = orientation)
         }
 
         canvas.restore()
@@ -170,12 +172,14 @@ class CamlRenderer(private val pkg: CamlPackage) {
         progress: Float = 0f,
         timeSeconds: Float = 0f,
         tiltX: Float = 0f,
-        tiltY: Float = 0f
+        tiltY: Float = 0f,
+        isDarkMode: Boolean = false,
+        orientation: String = "PortraitUp"
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.BLACK)
-        render(canvas, progress, timeSeconds, tiltX, tiltY)
+        render(canvas, progress, timeSeconds, tiltX, tiltY, isDarkMode = isDarkMode, orientation = orientation)
         return bitmap
     }
 
@@ -188,7 +192,9 @@ class CamlRenderer(private val pkg: CamlPackage) {
         tiltY: Float,
         rootH: Float,
         dt: Float,
-        fallbackParallaxScale: Float
+        fallbackParallaxScale: Float,
+        isDarkMode: Boolean = false,
+        orientation: String = "PortraitUp"
     ) {
         val treeYUp = !tree.rootLayer.geometryFlipped
         canvas.save()
@@ -202,7 +208,9 @@ class CamlRenderer(private val pkg: CamlPackage) {
             timeSeconds = timeSeconds,
             tiltX = tiltX,
             tiltY = tiltY,
-            fallbackParallaxScale = fallbackParallaxScale
+            fallbackParallaxScale = fallbackParallaxScale,
+            isDarkMode = isDarkMode,
+            orientation = orientation
         )
         drawPresentationLayer(canvas, pres, 1f, treeYUp, dt)
         canvas.restore()
@@ -400,7 +408,12 @@ class CamlRenderer(private val pkg: CamlPackage) {
                 }
                 is CAEmitterLayer -> {
                     val simKey = layer.id ?: orig.name ?: "emitter_${orig.hashCode()}"
-                    val sim = particleSimulators.getOrPut(simKey) { ParticleSimulator(orig) }
+                    val sim = particleSimulators.getOrPut(simKey) {
+                        ParticleSimulator(orig).apply {
+                            val warmUpSeconds = if (orig.beginTime < 0) kotlin.math.abs(orig.beginTime).toFloat() else 2.0f
+                            warmUp(warmUpSeconds, w, h, ::findBitmap)
+                        }
+                    }
                     if (isYUp) {
                         canvas.save()
                         canvas.translate(0f, h)
@@ -464,19 +477,20 @@ class CamlRenderer(private val pkg: CamlPackage) {
                 accumulatedTransform *= instTransform
             }
         } else {
-            if (!layer.sublayerTransform.isIdentity()) {
+            if (layer.sublayers.isNotEmpty()) {
                 canvas.save()
-                layer.sublayerTransform.toAndroidMatrixValues(matrixValues)
-                sublayerMatrix.setValues(matrixValues)
-                canvas.concat(sublayerMatrix)
+                if (layer.bounds.x != 0f || layer.bounds.y != 0f) {
+                    canvas.translate(-layer.bounds.x, -layer.bounds.y)
+                }
+                if (!layer.sublayerTransform.isIdentity()) {
+                    layer.sublayerTransform.toAndroidMatrixValues(matrixValues)
+                    sublayerMatrix.setValues(matrixValues)
+                    canvas.concat(sublayerMatrix)
+                }
                 for (sub in layer.sublayers) {
                     drawPresentationLayer(canvas, sub, effectiveAlpha, isYUp, dt)
                 }
                 canvas.restore()
-            } else {
-                for (sub in layer.sublayers) {
-                    drawPresentationLayer(canvas, sub, effectiveAlpha, isYUp, dt)
-                }
             }
         }
 

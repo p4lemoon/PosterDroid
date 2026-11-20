@@ -255,4 +255,33 @@ class CoreAnimationMathTest {
         assertEquals(0.0f, timingBoth.computeNormalizedProgress(0.5)!!, 1e-4f)
         assertEquals(1.0f, timingBoth.computeNormalizedProgress(2.5)!!, 1e-4f)
     }
+
+    @Test
+    fun testCATransform3DParseFunctions() {
+        val tScale = CATransform3D.parse("scale(3, 3, 1)")
+        assertNotNull(tScale)
+        assertEquals(3f, tScale!!.m11, 1e-4f)
+        assertEquals(3f, tScale.m22, 1e-4f)
+        assertEquals(1f, tScale.m33, 1e-4f)
+
+        val tChained = CATransform3D.parse("rotate(134.744deg) scale(1.24116, 1.24116, 1)")
+        assertNotNull(tChained)
+        // Check point transformation
+        val p = tChained!!.transformPoint(0f, 100f)
+        // (0, 100) rotated by 134.744 deg and scaled by 1.24116:
+        // x' = (0*cos - 100*sin) * 1.24116 = -100 * sin(134.744) * 1.24116 = -88.15
+        // y' = (0*sin + 100*cos) * 1.24116 = 100 * cos(134.744) * 1.24116 = -87.37
+        assertEquals(-88.15f, p.first, 0.5f)
+        assertEquals(-87.37f, p.second, 0.5f)
+
+        val tTrans = CATransform3D.parse("translate(10, 20, -5)")
+        assertNotNull(tTrans)
+        assertEquals(10f, tTrans!!.m41, 1e-4f)
+        assertEquals(20f, tTrans.m42, 1e-4f)
+        assertEquals(-5f, tTrans.m43, 1e-4f)
+
+        val tPersp = CATransform3D.parse("perspective(500)")
+        assertNotNull(tPersp)
+        assertEquals(-0.002f, tPersp!!.m34, 1e-5f)
+    }
 }

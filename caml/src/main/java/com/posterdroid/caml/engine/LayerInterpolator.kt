@@ -38,9 +38,15 @@ class LayerInterpolator {
         timeSeconds: Float
     ): EvaluatedLayer {
         val layerId = layer.id
+        val layerName = layer.name
+        val idCandidates = listOfNotNull(
+            layerId,
+            layerName,
+            layerName?.let { if (!it.startsWith("#")) "#$it" else null }
+        ).distinct()
 
-        val lockedValues = layerId?.let { lockedMap[it] } ?: emptyList()
-        val unlockValues = layerId?.let { unlockMap[it] } ?: emptyList()
+        val lockedValues = idCandidates.flatMap { lockedMap[it] ?: emptyList() }
+        val unlockValues = idCandidates.flatMap { unlockMap[it] ?: emptyList() }
 
         // Base properties
         var posX0 = layer.position.x
@@ -86,6 +92,7 @@ class LayerInterpolator {
                 "transform.rotation.z" -> sv.asFloat()?.let { rot0 = it }
                 "transform.scale.x" -> sv.asFloat()?.let { scaleX0 = it }
                 "transform.scale.y" -> sv.asFloat()?.let { scaleY0 = it }
+                "transform.scale", "transform.scale.xy" -> sv.asFloat()?.let { scaleX0 = it; scaleY0 = it }
                 "hidden" -> hidden0 = sv.value == true || sv.value == "1" || sv.value == "true"
             }
         }
@@ -105,6 +112,7 @@ class LayerInterpolator {
                 "transform.rotation.z" -> sv.asFloat()?.let { rot1 = it }
                 "transform.scale.x" -> sv.asFloat()?.let { scaleX1 = it }
                 "transform.scale.y" -> sv.asFloat()?.let { scaleY1 = it }
+                "transform.scale", "transform.scale.xy" -> sv.asFloat()?.let { scaleX1 = it; scaleY1 = it }
                 "hidden" -> hidden1 = sv.value == true || sv.value == "1" || sv.value == "true"
             }
         }

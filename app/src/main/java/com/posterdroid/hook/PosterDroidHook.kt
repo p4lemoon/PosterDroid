@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.IBinder
 import com.posterdroid.core.PosterConstants
 import com.posterdroid.core.ProgressEvent
+import com.posterdroid.core.UnlockState
 import com.posterdroid.hook.source.BiometricProgressSource
 import com.posterdroid.hook.source.HyperOSTouchProgressSource
 import com.posterdroid.hook.source.ProgressDispatcher
@@ -131,6 +132,12 @@ class PosterDroidHook : IXposedHookLoadPackage {
     private fun dispatchToWallpaper(event: ProgressEvent) {
         try {
             val context = appContext ?: return
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val isInteractive = pm?.isInteractive ?: true
+            if (!isInteractive && (event.state == UnlockState.UNLOCKING || event.state == UnlockState.UNLOCKED || event.progress > 0.05f)) {
+                XposedBridge.log("[PosterDroid] Ignored spurious ${event.state} (${event.progress}) while non-interactive/AOD")
+                return
+            }
             if (wallpaperManager == null) {
                 wallpaperManager = context.getSystemService(Context.WALLPAPER_SERVICE) as? WallpaperManager
             }

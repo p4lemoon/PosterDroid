@@ -333,24 +333,155 @@ data class CATransform3D(
         }
 
         /**
-         * Parses a 16-element string or comma/space-delimited transform.
+         * Parses a transform string which can be either:
+         * 1) A 16-element matrix: "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"
+         * 2) A chained function sequence: "rotate(134.744deg) scale(1.24116, 1.24116, 1)"
          */
         fun parse(str: String): CATransform3D? {
-            val parts = str.trim()
-                .replace("[", "")
-                .replace("]", "")
-                .split("[\\s,]+".toRegex())
-                .mapNotNull { it.toFloatOrNull() }
+            val trimmed = str.trim()
+            if (trimmed.isEmpty()) return null
 
-            if (parts.size == 16) {
-                return CATransform3D(
-                    m11 = parts[0], m12 = parts[1], m13 = parts[2], m14 = parts[3],
-                    m21 = parts[4], m22 = parts[5], m23 = parts[6], m24 = parts[7],
-                    m31 = parts[8], m32 = parts[9], m33 = parts[10], m34 = parts[11],
-                    m41 = parts[12], m42 = parts[13], m43 = parts[14], m44 = parts[15]
-                )
+            // 1. Try 16-element matrix if no function parens
+            if (!trimmed.contains("(")) {
+                val parts = trimmed
+                    .replace("[", "")
+                    .replace("]", "")
+                    .split("[\\s,]+".toRegex())
+                    .mapNotNull { it.toFloatOrNull() }
+
+                if (parts.size == 16) {
+                    return CATransform3D(
+                        m11 = parts[0], m12 = parts[1], m13 = parts[2], m14 = parts[3],
+                        m21 = parts[4], m22 = parts[5], m23 = parts[6], m24 = parts[7],
+                        m31 = parts[8], m32 = parts[9], m33 = parts[10], m34 = parts[11],
+                        m41 = parts[12], m42 = parts[13], m43 = parts[14], m44 = parts[15]
+                    )
+                }
+                return null
             }
-            return null
+
+            // 2. Parse function sequence e.g. "rotate(134.744deg) scale(1.24116, 1.24116, 1)"
+            val funcRegex = "([a-zA-Z0-9]+)\\s*\\(([^)]*)\\)".toRegex()
+            val matches = funcRegex.findAll(trimmed).toList()
+            if (matches.isEmpty()) return null
+
+            var result = IDENTITY
+            for (match in matches) {
+                val funcName = match.groupValues[1]
+                val argsStr = match.groupValues[2].trim()
+                val args = if (argsStr.isEmpty()) emptyList() else argsStr.split("[\\s,]+".toRegex())
+
+                when (funcName.lowercase()) {
+                    "rotate" -> {
+                        when (args.size) {
+                            1 -> result = result * makeRotationZ(parseAngle(args[0]))
+                            4 -> result = result * makeRotation(
+                                parseAngle(args[0]),
+                                args[1].toFloatOrNull() ?: 0f,
+                                args[2].toFloatOrNull() ?: 0f,
+                                args[3].toFloatOrNull() ?: 0f
+                            )
+                        }
+                    }
+                    "rotatez" -> {
+                        if (args.isNotEmpty()) result = result * makeRotationZ(parseAngle(args[0]))
+                    }
+                    "rotatex" -> {
+                        if (args.isNotEmpty()) result = result * makeRotationX(parseAngle(args[0]))
+                    }
+                    "rotatey" -> {
+                        if (args.isNotEmpty()) result = result * makeRotationY(parseAngle(args[0]))
+                    }
+                    "scale" -> {
+                        when (args.size) {
+                            1 -> {
+                                val s = args[0].toFloatOrNull() ?: 1f
+                                result = result * makeScale(s, s, 1f)
+                            }
+                            2 -> {
+                                val sx = args[0].toFloatOrNull() ?: 1f
+                                val sy = args[1].toFloatOrNull() ?: 1f
+                                result = result * makeScale(sx, sy, 1f)
+                            }
+                            3 -> {
+                                val sx = args[0].toFloatOrNull() ?: 1f
+                                val sy = args[1].toFloatOrNull() ?: 1f
+                                val sz = args[2].toFloatOrNull() ?: 1f
+                                result = result * makeScale(sx, sy, sz)
+                            }
+                        }
+                    }
+                    "scalex" -> {
+                        if (args.isNotEmpty()) {
+                            val sx = args[0].toFloatOrNull() ?: 1f
+                            result = result * makeScale(sx, 1f, 1f)
+                        }
+                    }
+                    "scaley" -> {
+                        if (args.isNotEmpty()) {
+                            val sy = args[0].toFloatOrNull() ?: 1f
+                            result = result * makeScale(1f, sy, 1f)
+                        }
+                    }
+                    "scalez" -> {
+                        if (args.isNotEmpty()) {
+                            val sz = args[0].toFloatOrNull() ?: 1f
+                            result = result * makeScale(1f, 1f, sz)
+                        }
+                    }
+                    "translate" -> {
+                        when (args.size) {
+                            1 -> {
+                                val tx = args[0].toFloatOrNull() ?: 0f
+                                result = result * makeTranslation(tx, 0f, 0f)
+                            }
+                            2 -> {
+                                val tx = args[0].toFloatOrNull() ?: 0f
+                                val ty = args[1].toFloatOrNull() ?: 0f
+                                result = result * makeTranslation(tx, ty, 0f)
+                            }
+                            3 -> {
+                                val tx = args[0].toFloatOrNull() ?: 0f
+                                val ty = args[1].toFloatOrNull() ?: 0f
+                                val tz = args[2].toFloatOrNull() ?: 0f
+                                result = result * makeTranslation(tx, ty, tz)
+                            }
+                        }
+                    }
+                    "translatex" -> {
+                        if (args.isNotEmpty()) result = result * makeTranslation(args[0].toFloatOrNull() ?: 0f, 0f, 0f)
+                    }
+                    "translatey" -> {
+                        if (args.isNotEmpty()) result = result * makeTranslation(0f, args[0].toFloatOrNull() ?: 0f, 0f)
+                    }
+                    "translatez" -> {
+                        if (args.isNotEmpty()) result = result * makeTranslation(0f, 0f, args[0].toFloatOrNull() ?: 0f)
+                    }
+                    "perspective" -> {
+                        if (args.isNotEmpty()) {
+                            val d = args[0].toFloatOrNull() ?: 0f
+                            if (abs(d) > 1e-4f) {
+                                result = result * makePerspective(-1f / d)
+                            }
+                        }
+                    }
+                }
+            }
+            return result
+        }
+
+        private fun parseAngle(s: String): Float {
+            val trimmed = s.trim()
+            return when {
+                trimmed.endsWith("deg", ignoreCase = true) -> {
+                    val v = trimmed.substring(0, trimmed.length - 3).trim().toFloatOrNull() ?: 0f
+                    Math.toRadians(v.toDouble()).toFloat()
+                }
+                trimmed.endsWith("rad", ignoreCase = true) -> {
+                    trimmed.substring(0, trimmed.length - 3).trim().toFloatOrNull() ?: 0f
+                }
+                else -> trimmed.toFloatOrNull() ?: 0f
+            }
         }
     }
 }

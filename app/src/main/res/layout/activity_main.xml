@@ -23,7 +23,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="16dp"
-                android:text="PosterDroid v0.1 [β]"
+                android:text="PosterDroid v0.2 [β]"
                 android:textAlignment="center"
                 android:textSize="24sp" />
 

@@ -222,4 +222,123 @@ class CoreAnimationEngineTest {
         assertEquals(0.479f, behindCell.color!!.a, 0.01f)
         assertEquals(0.8342f, behindCell.color!!.r, 0.01f)
     }
+
+    @Test
+    fun testFuzzyStateResolutionWithThemeAndOrientation() {
+        val root = com.posterdroid.caml.model.StandardCALayer(
+            id = "root",
+            bounds = com.posterdroid.caml.model.Rect4f(0f, 0f, 100f, 100f)
+        )
+        val tree = com.posterdroid.caml.model.CamlLayerTree(
+            rootLayer = root,
+            states = listOf(
+                com.posterdroid.caml.model.CamlState("Sleep PortraitUp Light"),
+                com.posterdroid.caml.model.CamlState("Lock PortraitUp Light"),
+                com.posterdroid.caml.model.CamlState("Home PortraitUp Light"),
+                com.posterdroid.caml.model.CamlState("Sleep PortraitUp Dark"),
+                com.posterdroid.caml.model.CamlState("Lock PortraitUp Dark"),
+                com.posterdroid.caml.model.CamlState("Home PortraitUp Dark")
+            )
+        )
+
+        // Light mode
+        val lockLight = tree.findState("Locked", isDarkMode = false, orientation = "PortraitUp")
+        assertNotNull(lockLight)
+        assertEquals("Lock PortraitUp Light", lockLight!!.name)
+
+        val homeLight = tree.findState("Unlock", isDarkMode = false, orientation = "PortraitUp")
+        assertNotNull(homeLight)
+        assertEquals("Home PortraitUp Light", homeLight!!.name)
+
+        // Dark mode
+        val lockDark = tree.findState("Locked", isDarkMode = true, orientation = "PortraitUp")
+        assertNotNull(lockDark)
+        assertEquals("Lock PortraitUp Dark", lockDark!!.name)
+
+        val homeDark = tree.findState("Unlock", isDarkMode = true, orientation = "PortraitUp")
+        assertNotNull(homeDark)
+        assertEquals("Home PortraitUp Dark", homeDark!!.name)
+    }
+
+    @Test
+    fun testStateInterpolationBackgroundColorAndAnchorPoint() {
+        val child = com.posterdroid.caml.model.StandardCALayer(
+            id = "testChild",
+            bounds = com.posterdroid.caml.model.Rect4f(0f, 0f, 100f, 100f),
+            anchorPoint = com.posterdroid.caml.model.Point2f(0f, 0f),
+            backgroundColor = com.posterdroid.caml.model.Color4f(0f, 0f, 0f, 1f)
+        )
+        val root = com.posterdroid.caml.model.StandardCALayer(
+            id = "root",
+            bounds = com.posterdroid.caml.model.Rect4f(0f, 0f, 100f, 100f),
+            sublayers = listOf(child)
+        )
+        val lockState = com.posterdroid.caml.model.CamlState(
+            name = "Locked",
+            setValues = listOf(
+                com.posterdroid.caml.model.CamlStateSetValue("testChild", "anchorPoint", "0 0"),
+                com.posterdroid.caml.model.CamlStateSetValue("testChild", "backgroundColor", "0 0 0 1")
+            )
+        )
+        val unlockState = com.posterdroid.caml.model.CamlState(
+            name = "Unlock",
+            setValues = listOf(
+                com.posterdroid.caml.model.CamlStateSetValue("testChild", "anchorPoint", "1 1"),
+                com.posterdroid.caml.model.CamlStateSetValue("testChild", "backgroundColor", "1 1 1 1")
+            )
+        )
+        val tree = com.posterdroid.caml.model.CamlLayerTree(
+            rootLayer = root,
+            states = listOf(lockState, unlockState)
+        )
+
+        val engine = CoreAnimationEngine()
+        val presMid = engine.computePresentation(tree, progress = 0.5f)
+        val childMid = presMid.findLayerById("testChild")!!
+
+        assertEquals(0.5f, childMid.anchorPoint.x, 1e-3f)
+        assertEquals(0.5f, childMid.anchorPoint.y, 1e-3f)
+        assertNotNull(childMid.backgroundColor)
+        assertEquals(0.5f, childMid.backgroundColor!!.r, 1e-3f)
+        assertEquals(0.5f, childMid.backgroundColor!!.g, 1e-3f)
+        assertEquals(0.5f, childMid.backgroundColor!!.b, 1e-3f)
+    }
+
+    @Test
+    fun testEmitterCellEnabledAndSubCellsXmlParsing() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
+              <CALayer bounds="0 0 100 100">
+                <sublayers>
+                  <CAEmitterLayer name="emitter1" bounds="0 0 100 100">
+                    <emitterCells>
+                      <CAEmitterCell name="cellDisabled" enabled="0" birthRate="10"/>
+                      <CAEmitterCell name="cellParent" enabled="1" birthRate="20">
+                        <emitterCells>
+                          <CAEmitterCell name="cellChild" birthRate="5"/>
+                        </emitterCells>
+                      </CAEmitterCell>
+                    </emitterCells>
+                  </CAEmitterLayer>
+                </sublayers>
+              </CALayer>
+            </caml>
+        """.trimIndent()
+
+        val tree = com.posterdroid.caml.parser.CamlXmlParser().parse(xml.byteInputStream())
+        val emitter = tree.rootLayer.sublayers.first() as com.posterdroid.caml.model.CAEmitterLayer
+        assertEquals(2, emitter.emitterCells.size)
+
+        val cell0 = emitter.emitterCells[0]
+        assertEquals("cellDisabled", cell0.name)
+        assertFalse(cell0.enabled)
+
+        val cell1 = emitter.emitterCells[1]
+        assertEquals("cellParent", cell1.name)
+        assertTrue(cell1.enabled)
+        assertEquals(1, cell1.emitterCells.size)
+        assertEquals("cellChild", cell1.emitterCells[0].name)
+        assertTrue(cell1.emitterCells[0].enabled)
+    }
 }

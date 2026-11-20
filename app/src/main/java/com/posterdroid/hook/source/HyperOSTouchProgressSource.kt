@@ -49,6 +49,20 @@ class HyperOSTouchProgressSource : ProgressSource {
                             }
 
                             val f = (param.args[0] as? Number)?.toFloat() ?: return
+                            val isInteractive = try {
+                                val field = XposedHelpers.findFieldIfExists(param.thisObject.javaClass, "deviceInteractive")
+                                if (field != null) {
+                                    field.getBoolean(param.thisObject)
+                                } else {
+                                    val windowView = XposedHelpers.getObjectField(param.thisObject, "notificationShadeWindowView") as? View
+                                    val pm = windowView?.context?.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+                                    pm?.isInteractive ?: true
+                                }
+                            } catch (e: Throwable) {
+                                true
+                            }
+                            if (!isInteractive) return
+
                             val progress = (1.0f - f).coerceIn(0f, 1f)
                             val state = when {
                                 progress <= 0.001f -> UnlockState.LOCKED
@@ -149,39 +163,7 @@ class HyperOSTouchProgressSource : ProgressSource {
             XposedBridge.log("[PosterDroid] Failed to hook startUnlockKeyguardDismissAnim: ${t.message}")
         }
 
-        // 4. Hook NotificationPanelViewController.setExpandedHeightInternalAosp as fallback progress
-        try {
-            val panelClass = classLoader.loadClass(HookTargets.NOTIFICATION_PANEL_CLASS)
-            XposedHelpers.findAndHookMethod(
-                panelClass,
-                "setExpandedHeightInternalAosp",
-                java.lang.Float.TYPE,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val isKeyguard = XposedHelpers.callMethod(param.thisObject, "isKeyguardShowing") as? Boolean ?: false
-                            if (isKeyguard) {
-                                val fraction = XposedHelpers.getFloatField(param.thisObject, "mExpandedFraction")
-                                val progress = (1.0f - fraction).coerceIn(0f, 1f)
-                                val state = when {
-                                    progress <= 0.001f -> UnlockState.LOCKED
-                                    progress >= 0.999f -> UnlockState.UNLOCKED
-                                    else -> UnlockState.DRAGGING
-                                }
-                                dispatcher.dispatch(progress, state)
-                            }
-                        } catch (t: Throwable) {
-                            // Safe catch
-                        }
-                    }
-                }
-            )
-            XposedBridge.log("[PosterDroid] Attached $name (setExpandedHeightInternalAosp)")
-        } catch (t: Throwable) {
-            XposedBridge.log("[PosterDroid] Failed to hook setExpandedHeightInternalAosp: ${t.message}")
-        }
-
-        // 5. Hook KeyguardUnlockAnimationController
+        // 4. Hook KeyguardUnlockAnimationController
         try {
             val unlockAnimClass = classLoader.loadClass(HookTargets.AOSP_UNLOCK_CONTROLLER_CLASS)
             XposedHelpers.findAndHookMethod(
@@ -205,7 +187,13 @@ class HyperOSTouchProgressSource : ProgressSource {
                 "notifyFinishedKeyguardExitAnimation",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        dispatcher.dispatch(1f, UnlockState.UNLOCKED)
+                        val cancelled = param.args.firstOrNull() as? Boolean ?: false
+                        if (cancelled) {
+                            dispatcher.dispatch(0f, UnlockState.CANCELLED)
+                            dispatcher.dispatch(0f, UnlockState.LOCKED)
+                        } else {
+                            dispatcher.dispatch(1f, UnlockState.UNLOCKED)
+                        }
                     }
                 }
             )
@@ -214,7 +202,7 @@ class HyperOSTouchProgressSource : ProgressSource {
             XposedBridge.log("[PosterDroid] Failed to hook KeyguardUnlockAnimationController: ${t.message}")
         }
 
-        // 6. Hook KeyguardStateControllerImpl for lifecycle state boundaries
+        // 5. Hook KeyguardStateControllerImpl for lifecycle state boundaries
         try {
             val keyguardStateClass = classLoader.loadClass(HookTargets.KEYGUARD_STATE_CONTROLLER_CLASS)
             XposedBridge.hookAllMethods(
@@ -224,9 +212,10 @@ class HyperOSTouchProgressSource : ProgressSource {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         try {
                             val showing = param.args[0] as? Boolean ?: true
+                            val occluded = (param.args.getOrNull(1) as? Boolean) ?: false
                             if (showing) {
                                 dispatcher.dispatch(0f, UnlockState.LOCKED)
-                            } else {
+                            } else if (!occluded) {
                                 dispatcher.dispatch(1f, UnlockState.UNLOCKED)
                             }
                         } catch (t: Throwable) {
@@ -240,7 +229,10 @@ class HyperOSTouchProgressSource : ProgressSource {
                 "notifyKeyguardGoingAway",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        dispatcher.dispatch(1f, UnlockState.UNLOCKING)
+                        val goingAway = param.args.firstOrNull() as? Boolean ?: false
+                        if (goingAway) {
+                            dispatcher.dispatch(1f, UnlockState.UNLOCKING)
+                        }
                     }
                 }
             )

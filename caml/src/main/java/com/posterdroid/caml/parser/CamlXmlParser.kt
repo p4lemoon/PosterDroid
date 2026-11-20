@@ -96,7 +96,7 @@ class CamlXmlParser(private val report: ParseReport? = null) {
         outParallax: MutableList<WallpaperParallaxGroup> = mutableListOf()
     ): CamlLayer {
         val tagName = element.tagName.substringAfter(":")
-        val id = element.getAttribute("id").ifEmpty { null }
+        val id = element.getAttribute("id").ifEmpty { element.getAttribute("name").ifEmpty { null } }
         val name = element.getAttribute("name").ifEmpty { null }
         val bounds = parseRect(element.getAttribute("bounds")) ?: Rect4f()
         val position = parsePoint(element.getAttribute("position")) ?: Point2f(bounds.width / 2f, bounds.height / 2f)
@@ -306,6 +306,7 @@ class CamlXmlParser(private val report: ParseReport? = null) {
                 val birthRate = element.getAttribute("birthRate").toFloatOrNull() ?: 1f
                 val velocity = element.getAttribute("velocity").toFloatOrNull() ?: 1f
                 val lifetime = element.getAttribute("lifetime").toFloatOrNull() ?: 1f
+                val spinBias = element.getAttribute("spinBias").toFloatOrNull() ?: 0f
 
                 val emitterCells = parseEmitterCells(element)
                 val emitterBehaviors = parseEmitterBehaviors(element)
@@ -314,8 +315,9 @@ class CamlXmlParser(private val report: ParseReport? = null) {
                     id, name, bounds, position, anchorPoint, zPosition, opacity, hidden,
                     masksToBounds, cornerRadius, backgroundColor, contents, transform, sublayerTransform,
                     geometryFlipped, sublayers, animations, filters,
+                    speed, beginTime, timeOffset,
                     emitterPosition, emitterZPosition, emitterSize, emitterDepth, emitterShape,
-                    renderMode, scale, birthRate, velocity, lifetime, emitterCells, emitterBehaviors
+                    renderMode, scale, birthRate, velocity, lifetime, spinBias, emitterCells, emitterBehaviors
                 )
             }
             else -> {
@@ -386,8 +388,12 @@ class CamlXmlParser(private val report: ParseReport? = null) {
                             if (kEl.tagName.substringAfter(":") == "LKStateSetValue") {
                                 val targetId = kEl.getAttribute("targetId")
                                 val keyPath = kEl.getAttribute("keyPath")
-                                val value = parseStateValue(kEl)
-                                setValues.add(CamlStateSetValue(targetId, keyPath, value))
+                                if (keyPath == "sublayers") {
+                                    parseSublayersStateValue(kEl, targetId, setValues)
+                                } else {
+                                    val value = parseStateValue(kEl)
+                                    setValues.add(CamlStateSetValue(targetId, keyPath, value))
+                                }
                             }
                         }
                     }
@@ -396,6 +402,125 @@ class CamlXmlParser(private val report: ParseReport? = null) {
             }
         }
         return list
+    }
+
+    private fun parseSublayersStateValue(
+        element: Element,
+        parentTargetId: String,
+        outSetValues: MutableList<CamlStateSetValue>
+    ) {
+        val children = element.childNodes
+        var valueElem: Element? = null
+        for (i in 0 until children.length) {
+            val node = children.item(i)
+            if (node.nodeType == Node.ELEMENT_NODE) {
+                val el = node as Element
+                if (el.tagName.substringAfter(":") == "value") {
+                    valueElem = el
+                    break
+                }
+            }
+        }
+        if (valueElem == null) return
+
+        val sublayerOrder = mutableListOf<String>()
+        val valChildren = valueElem.childNodes
+        for (i in 0 until valChildren.length) {
+            val node = valChildren.item(i)
+            if (node.nodeType != Node.ELEMENT_NODE) continue
+            val childEl = node as Element
+            if (childEl.tagName.substringAfter(":") == "CALayer") {
+                val objectId = childEl.getAttribute("object").ifEmpty { null }
+                if (objectId != null) {
+                    sublayerOrder.add(objectId)
+                } else {
+                    val layerId = childEl.getAttribute("id").ifEmpty { childEl.getAttribute("name").ifEmpty { null } }
+                    if (layerId != null) {
+                        sublayerOrder.add(layerId)
+                    }
+                    parseInlineLayerOverrides(childEl, layerId, outSetValues)
+                }
+            }
+        }
+
+        if (sublayerOrder.isNotEmpty()) {
+            outSetValues.add(CamlStateSetValue(parentTargetId, "sublayers", sublayerOrder))
+        }
+    }
+
+    private fun parseInlineLayerOverrides(
+        element: Element,
+        layerId: String?,
+        outSetValues: MutableList<CamlStateSetValue>
+    ) {
+        if (layerId == null) return
+
+        if (element.hasAttribute("position")) {
+            parsePoint(element.getAttribute("position"))?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "position", it))
+            }
+        }
+        if (element.hasAttribute("bounds")) {
+            parseRect(element.getAttribute("bounds"))?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "bounds", it))
+            }
+        }
+        if (element.hasAttribute("transform")) {
+            val trStr = element.getAttribute("transform")
+            val tr = CATransform3D.parse(trStr)
+            if (tr != null) {
+                outSetValues.add(CamlStateSetValue(layerId, "transform", tr))
+            }
+        }
+        if (element.hasAttribute("opacity")) {
+            element.getAttribute("opacity").toFloatOrNull()?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "opacity", it))
+            }
+        }
+        if (element.hasAttribute("hidden")) {
+            val h = element.getAttribute("hidden")
+            outSetValues.add(CamlStateSetValue(layerId, "hidden", h == "1" || h.equals("true", ignoreCase = true)))
+        }
+        if (element.hasAttribute("cornerRadius")) {
+            element.getAttribute("cornerRadius").toFloatOrNull()?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "cornerRadius", it))
+            }
+        }
+        if (element.hasAttribute("shadowOpacity")) {
+            element.getAttribute("shadowOpacity").toFloatOrNull()?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "shadowOpacity", it))
+            }
+        }
+        if (element.hasAttribute("zPosition")) {
+            element.getAttribute("zPosition").toFloatOrNull()?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "zPosition", it))
+            }
+        }
+        if (element.hasAttribute("anchorPoint")) {
+            parsePoint(element.getAttribute("anchorPoint"))?.let {
+                outSetValues.add(CamlStateSetValue(layerId, "anchorPoint", it))
+            }
+        }
+
+        val children = element.childNodes
+        for (i in 0 until children.length) {
+            val node = children.item(i)
+            if (node.nodeType != Node.ELEMENT_NODE) continue
+            val childEl = node as Element
+            val tagName = childEl.tagName.substringAfter(":")
+            if (tagName == "sublayers") {
+                val subChildren = childEl.childNodes
+                for (j in 0 until subChildren.length) {
+                    val subNode = subChildren.item(j)
+                    if (subNode.nodeType != Node.ELEMENT_NODE) continue
+                    val subEl = subNode as Element
+                    if (subEl.tagName.substringAfter(":") == "CALayer") {
+                        val subId = subEl.getAttribute("id").ifEmpty { subEl.getAttribute("name").ifEmpty { null } }
+                        parseInlineLayerOverrides(subEl, subId, outSetValues)
+                    }
+                }
+            }
+        }
     }
 
     private fun parseStateValue(element: Element): Any? {
@@ -690,6 +815,9 @@ class CamlXmlParser(private val report: ParseReport? = null) {
         val emRange = element.getAttribute("emissionRange").toFloatOrNull() ?: 0f
         val rotation = element.getAttribute("rotation").toFloatOrNull() ?: 0f
         val rotationRange = element.getAttribute("rotationRange").toFloatOrNull() ?: 0f
+        val enabled = if (element.hasAttribute("enabled")) parseBoolean(element.getAttribute("enabled")) else true
+        val contentsScale = element.getAttribute("contentsScale").toFloatOrNull() ?: 1f
+        val speed = element.getAttribute("speed").toFloatOrNull() ?: 1f
 
         val contentsFrameCount = element.getAttribute("contentsFrameCount").toIntOrNull() ?: 1
         val contentsFramesPerRow = element.getAttribute("contentsFramesPerRow").toIntOrNull() ?: 1
@@ -697,6 +825,8 @@ class CamlXmlParser(private val report: ParseReport? = null) {
 
         var cellColor = parseColor(element.getAttribute("color"))
         var contents: CamlContents? = null
+        val subCells = mutableListOf<CAEmitterCell>()
+
         val cellChildren = element.childNodes
         for (i in 0 until cellChildren.length) {
             val cn = cellChildren.item(i)
@@ -705,6 +835,16 @@ class CamlXmlParser(private val report: ParseReport? = null) {
                 when (cel.tagName.substringAfter(":")) {
                     "contents" -> contents = parseContents(cel)
                     "color" -> parseChildColor(cel)?.let { cellColor = it }
+                    "emitterCells" -> {
+                        val scNodes = cel.childNodes
+                        for (k in 0 until scNodes.length) {
+                            val sc = scNodes.item(k)
+                            if (sc.nodeType == Node.ELEMENT_NODE) {
+                                parseSingleCell(sc as Element)?.let { subCells.add(it) }
+                            }
+                        }
+                    }
+                    "CAEmitterCell" -> parseSingleCell(cel)?.let { subCells.add(it) }
                 }
             }
         }
@@ -716,7 +856,8 @@ class CamlXmlParser(private val report: ParseReport? = null) {
             xAcc, yAcc, zAcc, scale, scaleRange, scaleSpeed, spin, spinRange,
             alphaRange, alphaSpeed, emLat, emLong, emRange,
             contents, contentsFrameCount, contentsFramesPerRow, contentsRect,
-            cellColor, rotation, rotationRange, behaviors
+            cellColor, rotation, rotationRange, behaviors, enabled, subCells,
+            contentsScale, speed
         )
     }
 

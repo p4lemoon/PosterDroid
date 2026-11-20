@@ -191,4 +191,100 @@ class TendiesParserTest {
             assertTrue(e is java.util.zip.ZipException || e is IllegalArgumentException || e is java.io.IOException)
         }
     }
+
+    @Test
+    fun testEmitterParsingWithContentsScale() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
+              <CALayer bounds="0 0 100 100">
+                <sublayers>
+                  <CAEmitterLayer id="emitter" lifetime="0.035" emitterSize="200 200" bounds="0 0 20 20">
+                    <emitterCells>
+                      <CAEmitterCell name="NoteCell" birthRate="12" lifetime="100" contentsScale="16.67" scaleSpeed="0.22875" velocity="114" yAcceleration="255">
+                        <contents type="CGImage" src="assets/mortarboard.png"/>
+                      </CAEmitterCell>
+                    </emitterCells>
+                  </CAEmitterLayer>
+                </sublayers>
+              </CALayer>
+            </caml>
+        """.trimIndent()
+
+        val tree = com.posterdroid.caml.parser.CamlXmlParser().parse(xml)
+        val emitter = tree.rootLayer.sublayers.first() as com.posterdroid.caml.model.CAEmitterLayer
+        assertEquals(0.035f, emitter.lifetime, 0.0001f)
+        assertEquals(1, emitter.emitterCells.size)
+
+        val cell = emitter.emitterCells.first()
+        assertEquals("NoteCell", cell.name)
+        assertEquals(12f, cell.birthRate, 0.0001f)
+        assertEquals(100f, cell.lifetime, 0.0001f)
+        assertEquals(16.67f, cell.contentsScale, 0.01f)
+        assertEquals(0.22875f, cell.scaleSpeed, 0.0001f)
+        assertEquals(114f, cell.velocity, 0.0001f)
+        assertEquals(255f, cell.yAcceleration, 0.0001f)
+    }
+
+    @Test
+    fun testBochismallHierarchyAndTransforms() {
+        val file = File("D:/Загрузки/AyuGram Desktop/bochismall.tendies")
+        if (!file.exists()) return
+
+        val pkg = TendiesExtractor().extract(file)
+        assertNotNull(pkg.floating)
+        val tree = pkg.floating!!
+
+        val engine = com.posterdroid.caml.engine.CoreAnimationEngine()
+        val pres = engine.computePresentation(tree, progress = 0f)
+
+        fun dump(l: com.posterdroid.caml.engine.PresentationLayer, indent: Int = 0) {
+            val name = l.name ?: l.id ?: "layer"
+            println(" ".repeat(indent * 2) + "[$name] pos=${l.position} bounds=${l.bounds} trans=${l.transform}")
+            for (sub in l.sublayers) dump(sub, indent + 1)
+        }
+        dump(pres)
+    }
+
+    @Test
+    fun testCatVolleyballNetPlacement() {
+        val file = File("D:/catvolleyball-lite.tendies")
+        if (!file.exists()) return
+
+        val pkg = TendiesExtractor().extract(file)
+        assertNotNull(pkg.floating)
+        val tree = pkg.floating!!
+
+        val engine = com.posterdroid.caml.engine.CoreAnimationEngine()
+        val presLocked = engine.computePresentation(tree, progress = 0f)
+
+        fun findLayer(l: com.posterdroid.caml.engine.PresentationLayer, name: String): com.posterdroid.caml.engine.PresentationLayer? {
+            if (l.name == name || l.id == name) return l
+            for (sub in l.sublayers) {
+                val f = findLayer(sub, name)
+                if (f != null) return f
+            }
+            return null
+        }
+
+        val netLocked = findLayer(presLocked, "VolleyBallNet")
+        assertNotNull("VolleyBallNet must be found in presentation tree", netLocked)
+        assertEquals(1970f, netLocked!!.position.x, 1f)
+        assertEquals(1947f, netLocked.position.y, 1f)
+        assertEquals(2400f, netLocked.bounds.width, 1f)
+        assertEquals(1000f, netLocked.bounds.height, 1f)
+
+        // Check sublayer ordering in Root Layer
+        val rootSublayerNames = presLocked.sublayers.map { it.name ?: it.id }
+        println("Root sublayer order in Locked state: $rootSublayerNames")
+        val catIdx = rootSublayerNames.indexOf("Enemy (Cat)")
+        val netIdx = rootSublayerNames.indexOf("VolleyBallNet")
+        val ballIdx = rootSublayerNames.indexOf("Ball")
+
+        assertTrue("Enemy (Cat) must exist", catIdx >= 0)
+        assertTrue("VolleyBallNet must exist", netIdx >= 0)
+        assertTrue("Ball must exist", ballIdx >= 0)
+        assertTrue("VolleyBallNet ($netIdx) must be in front of Enemy (Cat) ($catIdx)", netIdx > catIdx)
+        assertTrue("Ball ($ballIdx) must be in front of VolleyBallNet ($netIdx)", ballIdx > netIdx)
+    }
 }

@@ -30,7 +30,11 @@ data class CAEmitterCell(
     val color: Color4f? = null,
     val rotation: Float = 0f,
     val rotationRange: Float = 0f,
-    val behaviors: List<CAEmitterBehavior> = emptyList()
+    val behaviors: List<CAEmitterBehavior> = emptyList(),
+    val enabled: Boolean = true,
+    val emitterCells: List<CAEmitterCell> = emptyList(),
+    val contentsScale: Float = 1f,
+    val speed: Float = 1f
 )
 
 /**

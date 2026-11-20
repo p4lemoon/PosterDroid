@@ -6,6 +6,7 @@ import android.graphics.*
 import com.posterdroid.caml.model.CAEmitterCell
 import com.posterdroid.caml.model.CAEmitterLayer
 import com.posterdroid.caml.model.CamlContents
+import com.posterdroid.caml.model.Point2f
 import kotlin.math.*
 import kotlin.random.Random
 
@@ -24,6 +25,8 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
         var ax = 0f
         var ay = 0f
         var scale = 1f
+        var scaleSpeed = 0f
+        var contentsScale = 1f
         var alpha = 1f
         var baseAlpha = 1f
         var alphaSpeed = 0f
@@ -33,6 +36,7 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
         var spin = 0f
         var age = 0f
         var lifetime = 1f
+        var timeScale = 1f
         var waveForceY = 0f
         var waveFreq = 1f
         var bmp: Bitmap? = null
@@ -49,6 +53,90 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
     private val srcRect = Rect()
     private val dstRect = RectF()
 
+    fun warmUp(
+        durationSeconds: Float,
+        w: Float,
+        h: Float,
+        findBitmap: (String) -> Bitmap?
+    ) {
+        if (emitter.hidden || emitter.emitterCells.isEmpty()) return
+        val layerSpeed = (emitter.speed.toFloat()).coerceAtLeast(0.0001f)
+        val dt = 0.05f
+        val steps = ((durationSeconds.coerceIn(1.0f, 6.0f) / layerSpeed) / dt).toInt().coerceIn(30, 150)
+        for (i in 0 until steps) {
+            stepSimulation(dt, w, h, findBitmap)
+        }
+    }
+
+    private fun stepSimulation(
+        dt: Float,
+        w: Float,
+        h: Float,
+        findBitmap: (String) -> Bitmap?
+    ) {
+        for (cell in emitter.emitterCells) {
+            if (!cell.enabled) continue
+            spawnFromCell(cell, dt, w, h, findBitmap)
+            for (subCell in cell.emitterCells) {
+                if (subCell.enabled) {
+                    spawnFromCell(subCell, dt, w, h, findBitmap)
+                }
+            }
+        }
+
+        for (p in pool) {
+            if (!p.active) continue
+
+            val pDt = dt * p.timeScale
+            p.age += pDt
+            if (p.age >= p.lifetime) {
+                p.active = false
+                continue
+            }
+
+            var curAy = p.ay
+            if (p.waveForceY != 0f) {
+                curAy += p.waveForceY * sin(2.0 * Math.PI * p.waveFreq * p.age).toFloat()
+            }
+
+            p.vx += p.ax * pDt
+            p.vy += curAy * pDt
+            p.x += p.vx * pDt
+            p.y += p.vy * pDt
+            p.rotation += p.spin * pDt
+
+            if (p.scaleSpeed != 0f) {
+                p.scale = (p.scale + p.scaleSpeed * pDt).coerceAtLeast(0.01f)
+            }
+
+            if (p.alphaSpeed != 0f) {
+                p.baseAlpha = (p.baseAlpha + p.alphaSpeed * pDt).coerceIn(0f, 1f)
+            }
+        }
+    }
+
+    private fun spawnFromCell(
+        cell: CAEmitterCell,
+        dt: Float,
+        w: Float,
+        h: Float,
+        findBitmap: (String) -> Bitmap?
+    ) {
+        val rate = cell.birthRate * emitter.birthRate
+        if (rate <= 0f) return
+
+        val layerSpeed = (emitter.speed.toFloat()).coerceAtLeast(0.0001f)
+        val effectiveDt = dt * layerSpeed * (cell.speed).coerceAtLeast(0.0001f)
+        spawnAccumulator += rate * effectiveDt
+        val toSpawn = spawnAccumulator.toInt().coerceAtMost(20)
+        spawnAccumulator -= toSpawn
+
+        for (i in 0 until toSpawn) {
+            val p = pool.firstOrNull { !it.active } ?: break
+            initParticle(p, cell, w, h, findBitmap)
+        }
+    }
+
     fun updateAndDraw(
         canvas: Canvas,
         dt: Float,
@@ -60,21 +148,7 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
         if (emitter.hidden || emitter.opacity <= 0.001f || emitter.emitterCells.isEmpty()) return
 
         val clampedDt = dt.coerceIn(0.001f, 0.05f)
-
-        // 1. Spawning
-        for (cell in emitter.emitterCells) {
-            val rate = cell.birthRate * emitter.birthRate
-            if (rate <= 0f) continue
-
-            spawnAccumulator += rate * clampedDt
-            val toSpawn = spawnAccumulator.toInt().coerceAtMost(20)
-            spawnAccumulator -= toSpawn
-
-            for (i in 0 until toSpawn) {
-                val p = pool.firstOrNull { !it.active } ?: break
-                initParticle(p, cell, w, h, findBitmap)
-            }
-        }
+        stepSimulation(clampedDt, w, h, findBitmap)
 
         val isAdditive = emitter.renderMode.equals("additive", ignoreCase = true)
         val prevXfermode = particlePaint.xfermode
@@ -82,38 +156,20 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
             particlePaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
         }
 
-        // 2. Physics & Draw
+        // 2. Draw
         for (p in pool) {
             if (!p.active) continue
 
-            p.age += clampedDt
-            if (p.age >= p.lifetime) {
-                p.active = false
-                continue
-            }
-
-            // Apply wave behavior force if present
-            var curAy = p.ay
-            if (p.waveForceY != 0f) {
-                curAy += p.waveForceY * sin(2.0 * Math.PI * p.waveFreq * p.age).toFloat()
-            }
-
-            p.vx += p.ax * clampedDt
-            p.vy += curAy * clampedDt
-            p.x += p.vx * clampedDt
-            p.y += p.vy * clampedDt
-            p.rotation += p.spin * clampedDt
-
-            if (p.alphaSpeed != 0f) {
-                p.baseAlpha = (p.baseAlpha + p.alphaSpeed * clampedDt).coerceIn(0f, 1f)
-            }
-
             // Fade in/out over lifetime
             val progress = p.age / p.lifetime
-            val fade = when {
-                progress < 0.15f -> progress / 0.15f
-                progress > 0.85f -> (1.0f - progress) / 0.15f
-                else -> 1.0f
+            val fade = if (p.bmp != null) {
+                if (progress > 0.95f) (1.0f - progress) / 0.05f else 1.0f
+            } else {
+                when {
+                    progress < 0.15f -> progress / 0.15f
+                    progress > 0.85f -> (1.0f - progress) / 0.15f
+                    else -> 1.0f
+                }
             }
             val finalAlpha = (p.baseAlpha * fade * parentAlpha * emitter.opacity).coerceIn(0f, 1f)
             particlePaint.alpha = (finalAlpha * 255).toInt()
@@ -126,8 +182,8 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
 
             val bmp = p.bmp
             if (bmp != null && !bmp.isRecycled) {
-                val pw = (bmp.width / p.framesPerRow) * p.scale
-                val ph = (bmp.height / (p.totalFrames / p.framesPerRow).coerceAtLeast(1)) * p.scale
+                val pw = (bmp.width / p.framesPerRow) * p.scale / p.contentsScale
+                val ph = (bmp.height / (p.totalFrames / p.framesPerRow).coerceAtLeast(1)) * p.scale / p.contentsScale
 
                 val halfW = pw / 2f
                 val halfH = ph / 2f
@@ -183,30 +239,37 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
     ) {
         p.active = true
         p.age = 0f
-        p.lifetime = (cell.lifetime + (Random.nextFloat() - 0.5f) * cell.lifetimeRange).coerceAtLeast(0.2f)
+        val layerSpeed = (emitter.speed.toFloat()).coerceAtLeast(0.0001f)
+        p.timeScale = layerSpeed * (cell.speed).coerceAtLeast(0.0001f)
+        p.lifetime = ((cell.lifetime + (Random.nextFloat() - 0.5f) * cell.lifetimeRange) * emitter.lifetime).coerceAtLeast(0.1f)
+        p.contentsScale = cell.contentsScale.coerceAtLeast(0.01f)
+        p.scaleSpeed = cell.scaleSpeed
 
         // Emitter position + size
-        val ex = emitter.emitterPosition.x.takeIf { it != 0f } ?: (w / 2f)
-        val ey = emitter.emitterPosition.y.takeIf { it != 0f } ?: (h / 2f)
-        val ew = emitter.emitterSize.x.takeIf { it != 0f } ?: w
-        val eh = emitter.emitterSize.y.takeIf { it != 0f } ?: h
+        val defaultPoint = Point2f()
+        val ex = if (emitter.emitterPosition != defaultPoint) emitter.emitterPosition.x else (w / 2f)
+        val ey = if (emitter.emitterPosition != defaultPoint) emitter.emitterPosition.y else (h / 2f)
+        val ew = if (emitter.emitterSize.x > 0f) emitter.emitterSize.x else w
+        val eh = if (emitter.emitterSize.y > 0f) emitter.emitterSize.y else h
 
         p.x = ex + (Random.nextFloat() - 0.5f) * ew
         p.y = ey + (Random.nextFloat() - 0.5f) * eh
 
-        // Direction & Speed
-        val angle = cell.emissionLongitude + (Random.nextFloat() - 0.5f) * cell.emissionRange
-        val speed = cell.velocity + (Random.nextFloat() - 0.5f) * cell.velocityRange
+        p.scale = (cell.scale + (Random.nextFloat() - 0.5f) * cell.scaleRange).coerceAtLeast(0.01f) * emitter.scale
+        val depthFactor = (p.scale / (cell.scale * emitter.scale).coerceAtLeast(0.001f)).coerceIn(0.5f, 2.0f)
 
-        p.vx = cos(angle) * speed
-        p.vy = sin(angle) * speed
+        // Direction & Speed in 3D (longitude & latitude) modulated by depth factor
+        val angle = cell.emissionLongitude + (Random.nextFloat() - 0.5f) * cell.emissionRange
+        val latAngle = cell.emissionLatitude + (Random.nextFloat() - 0.5f) * cell.emissionRange * 0.3f
+        val speed = (cell.velocity + (Random.nextFloat() - 0.5f) * cell.velocityRange) * emitter.velocity * depthFactor
+
+        p.vx = (cos(latAngle) * cos(angle) * speed).toFloat()
+        p.vy = (cos(latAngle) * sin(angle) * speed).toFloat()
 
         p.ax = cell.xAcceleration
         p.ay = cell.yAcceleration
-
-        p.scale = (cell.scale + (Random.nextFloat() - 0.5f) * cell.scaleRange).coerceAtLeast(0.01f) * emitter.scale
         val color = cell.color
-        if (color != null) {
+        if (color != null && (color.r < 0.99f || color.g < 0.99f || color.b < 0.99f)) {
             p.hasTint = true
             p.tintColor = Color.rgb(
                 (color.r * 255).toInt().coerceIn(0, 255),
@@ -216,11 +279,12 @@ class ParticleSimulator(private val emitter: CAEmitterLayer) {
             p.baseAlpha = (color.a * (1.0f - (Random.nextFloat() - 0.5f) * cell.alphaRange)).coerceIn(0.01f, 1.0f)
         } else {
             p.hasTint = false
-            p.baseAlpha = (1.0f - (Random.nextFloat() - 0.5f) * cell.alphaRange).coerceIn(0.1f, 1.0f)
+            val a = color?.a ?: 1.0f
+            p.baseAlpha = (a * (1.0f - (Random.nextFloat() - 0.5f) * cell.alphaRange)).coerceIn(0.01f, 1.0f)
         }
         p.alphaSpeed = cell.alphaSpeed
 
-        p.spin = cell.spin + (Random.nextFloat() - 0.5f) * cell.spinRange
+        p.spin = cell.spin + (Random.nextFloat() - 0.5f) * cell.spinRange + emitter.spinBias
         if (cell.rotation != 0f || cell.rotationRange != 0f) {
             p.rotation = cell.rotation + (Random.nextFloat() - 0.5f) * cell.rotationRange
         } else {
